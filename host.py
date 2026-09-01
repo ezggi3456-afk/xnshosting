@@ -14,8 +14,8 @@ from telegram.ext import (
 )
 
 # ================= CONFIGURATION =================
-TOKEN = "YOUR_BOT_TOKEN"          # <-- Put your BotFather token here
-ADMIN_CHAT_ID = 123456789         # <-- Put your numeric Telegram Admin Chat ID here
+TOKEN = "8250073152:AAHURmxKNhTDhwwsYz31uXMJWo7IsO5cYEo"          # <-- Put your BotFather token here
+ADMIN_CHAT_ID =  8251667049        # <-- Put your numeric Telegram Admin Chat ID here
 # =================================================
 
 active_process = None
