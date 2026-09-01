@@ -20,6 +20,7 @@ ADMIN_CHAT_ID = 8251667049
 
 active_process = None
 active_filename = None
+bot_app_context = None  # Used for sending background thread messages
 
 def is_admin(chat_id: int) -> bool:
     return chat_id == ADMIN_CHAT_ID
@@ -32,6 +33,39 @@ def get_main_menu():
         [InlineKeyboardButton("🛑 Stop Running Script", callback_data="menu_stop")],
         [InlineKeyboardButton("ℹ️ Help", callback_data="menu_help")]
     ]
+
+# --- Background Output Reader Thread ---
+def monitor_process_output(process, filename, bot):
+    global active_process, active_filename
+    
+    # Read stdout line by line and send to admin
+    try:
+        while process.poll() is None:
+            output = process.stdout.readline()
+            if output:
+                # Send output line to admin via asyncio run or thread-safe method
+                import asyncio
+                asyncio.run_coroutine_threadsafe(
+                    bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"💻 `[{filename}]`\n{output.strip()}", parse_mode="Markdown"),
+                    bot_loop
+                )
+        
+        # Read remaining stderr/stdout after process ends
+        stderr_output = process.stderr.read()
+        if stderr_output:
+            import asyncio
+            asyncio.run_coroutine_threadsafe(
+                bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"⚠️ `[{filename}] Error/Exit:\n{stderr_output.strip()}`", parse_mode="Markdown"),
+                bot_loop
+            )
+    except Exception as e:
+        print(f"Monitor error: {e}")
+    finally:
+        if active_process == process:
+            active_process = None
+            active_filename = None
+
+bot_loop = None
 
 # --- Main Start Command & Menu ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -73,7 +107,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "menu_status":
         global active_process, active_filename
         if active_process and active_process.poll() is None:
-            status_msg = f"🟢 **Status:** Running\n📂 **Active Script:** `{active_filename}`"
+            status_msg = f"🟢 **Status:** Running\n📂 **Active Script:** `{active_filename}`\n\n*(Outputs and input requests will stream here automatically)*"
         else:
             status_msg = "🔴 **Status:** No script is currently running."
         
@@ -81,7 +115,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(status_msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
     elif data == "menu_storage":
-        # List all .py files in current directory
         files = [f for f in os.listdir(os.getcwd()) if f.endswith(".py") and f != "host_bot.py"]
         if not files:
             await query.edit_message_text(
@@ -118,6 +151,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🛠 **Admin Commands & Instructions:**\n\n"
             "• **Upload .py file:** Saves and prepares a script for hosting.\n"
             "• **Storage:** View, run, or delete all saved scripts on the bot.\n"
+            "• **Interactive Input:** If a running script asks for `input()`, simply reply in chat to send values into it.\n"
             "• **Pip Command:** Type `pip install <package>` directly in chat to install dependencies.\n"
         )
         keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_main")]]
@@ -175,13 +209,23 @@ async def file_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             await query.message.reply_text("⚠️ Another script is already running! Stop it first.")
             return
 
-        def run_script():
-            global active_process
-            active_process = subprocess.Popen([sys.executable, filename], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            active_process = subprocess.Popen(
+                [sys.executable, filename],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1
+            )
+            active_filename = filename
 
-        threading.Thread(target=run_script, daemon=True).start()
-        active_filename = filename
-        await query.edit_message_text(f"🚀 Started hosting and executing `{filename}` in the background!")
+            # Start thread to listen to process prints/errors
+            threading.Thread(target=monitor_process_output, args=(active_process, filename, context.bot), daemon=True).start()
+
+            await query.edit_message_text(f"🚀 Started hosting and executing `{filename}`!\nOutputs will stream here. If it asks for input, just reply in chat.")
+        except Exception as e:
+            await query.edit_message_text(f"❌ Failed to start script: {str(e)}")
 
     elif data.startswith("del_"):
         filename = data.replace("del_", "")
@@ -225,13 +269,27 @@ async def file_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             await query.message.reply_text(f"❌ Error processing requirements: {str(e)}")
 
-# --- Direct Admin Pip Commands ---
-async def handle_text_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- Direct Admin Text Messages & Interactive Inputs / Pip Commands ---
+async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if not is_admin(chat_id):
         return
 
     text = update.message.text.strip()
+    global active_process
+
+    # 1. If a script is running and asking for input, forward this text into its stdin
+    if active_process and active_process.poll() is None:
+        try:
+            active_process.stdin.write(text + "\n")
+            active_process.stdin.flush()
+            await update.message.reply_text("📤 Input sent to running script.")
+            return
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error sending input to script: {e}")
+            return
+
+    # 2. Handle Pip Command if no script is actively looking for input
     if text.startswith("pip install "):
         package = text.replace("pip install", "").strip()
         await update.message.reply_text(f"⏳ Running: `pip install {package}`...", parse_mode="Markdown")
@@ -241,20 +299,26 @@ async def handle_text_commands(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text(f"✅ Successfully installed `{package}`!\n```\n{process.stdout[-400:]}\n```", parse_mode="Markdown")
         else:
             await update.message.reply_text(f"❌ Failed to install package:\n```\n{process.stderr[-400:]}\n```", parse_mode="Markdown")
+    else:
+        await update.message.reply_text("ℹ️ No script is currently running. Use /start to open the control panel or type `pip install <package>`.")
 
 # --- Main Application Setup ---
 def main():
+    global bot_loop
+    import asyncio
+    bot_loop = asyncio.get_event_loop()
+
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler, pattern="^(menu_|back_)"))
     app.add_handler(CallbackQueryHandler(file_action_handler, pattern="^(run_|req_|del_)"))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_commands))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_messages))
 
     print("🤖 Hosting Bot is up and running securely...")
     app.run_polling()
 
 if __name__ == "__main__":
     main()
-        
+            
