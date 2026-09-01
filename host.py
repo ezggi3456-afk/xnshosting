@@ -14,14 +14,24 @@ from telegram.ext import (
 )
 
 # ================= CONFIGURATION =================
-TOKEN = "8250073152:AAHURmxKNhTDhwwsYz31uXMJWo7IsO5cYEo"          # <-- Put your BotFather token here
-ADMIN_CHAT_ID =  8251667049        # <-- Put your numeric Telegram Admin Chat ID here
+TOKEN = "8250073152:AAHURmxKNhTDhwwsYz31uXMJWo7IsO5cYEo"
+ADMIN_CHAT_ID = 8251667049
 # =================================================
 
 active_process = None
+active_filename = None
 
 def is_admin(chat_id: int) -> bool:
     return chat_id == ADMIN_CHAT_ID
+
+def get_main_menu():
+    return [
+        [InlineKeyboardButton("📂 Upload & Host Script", callback_data="menu_upload")],
+        [InlineKeyboardButton("📦 Auto-Install Requirements", callback_data="menu_auto_req")],
+        [InlineKeyboardButton("📊 Status", callback_data="menu_status"), InlineKeyboardButton("💾 Storage", callback_data="menu_storage")],
+        [InlineKeyboardButton("🛑 Stop Running Script", callback_data="menu_stop")],
+        [InlineKeyboardButton("ℹ️ Help", callback_data="menu_help")]
+    ]
 
 # --- Main Start Command & Menu ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -30,13 +40,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ Unauthorized: You are not allowed to use this bot.")
         return
 
-    keyboard = [
-        [InlineKeyboardButton("📂 Upload & Host Script", callback_data="menu_upload")],
-        [InlineKeyboardButton("📦 Auto-Install Requirements", callback_data="menu_auto_req")],
-        [InlineKeyboardButton("🛑 Stop Running Script", callback_data="menu_stop")],
-        [InlineKeyboardButton("ℹ️ Status & Help", callback_data="menu_help")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    reply_markup = InlineKeyboardMarkup(get_main_menu())
     await update.message.reply_text(
         "🤖 **Python Hosting Bot Control Panel**\n\nWelcome Admin! Choose an option below or send a `.py` file directly.",
         reply_markup=reply_markup,
@@ -57,38 +61,69 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "menu_upload":
         await query.edit_message_text(
             "📤 **Send your Python (.py) file now.**\n\n"
-            "Once uploaded, you can choose to auto-install requirements or run it directly."
+            "Once uploaded, you can choose to auto-install requirements or run it directly.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_main")]])
         )
     elif data == "menu_auto_req":
         await query.edit_message_text(
             "📦 **Auto-Download Requirements**\n\n"
-            "Upload a `requirements.txt` file or a `.py` script, and I will parse and install missing modules automatically."
+            "Upload a `requirements.txt` file or a `.py` script, and I will parse and install missing modules automatically.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_main")]])
         )
+    elif data == "menu_status":
+        global active_process, active_filename
+        if active_process and active_process.poll() is None:
+            status_msg = f"🟢 **Status:** Running\n📂 **Active Script:** `{active_filename}`"
+        else:
+            status_msg = "🔴 **Status:** No script is currently running."
+        
+        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_main")]]
+        await query.edit_message_text(status_msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+    elif data == "menu_storage":
+        # List all .py files in current directory
+        files = [f for f in os.listdir(os.getcwd()) if f.endswith(".py") and f != "host_bot.py"]
+        if not files:
+            await query.edit_message_text(
+                "💾 **Storage is Empty**\n\nNo saved Python files found.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_main")]])
+            )
+            return
+
+        keyboard = []
+        for file in files:
+            keyboard.append([
+                InlineKeyboardButton(f"📄 {file}", callback_data=f"noop_{file}"),
+                InlineKeyboardButton("🚀 Run", callback_data=f"run_{file}"),
+                InlineKeyboardButton("🗑 Delete", callback_data=f"del_{file}")
+            ])
+        keyboard.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="back_main")])
+        
+        await query.edit_message_text(
+            "💾 **Storage Management**\n\nSelect an action for your saved scripts:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+
     elif data == "menu_stop":
-        global active_process
         if active_process and active_process.poll() is None:
             active_process.terminate()
             active_process = None
-            await query.edit_message_text("🛑 The running python script has been stopped successfully.")
+            active_filename = None
+            await query.edit_message_text("🛑 The running python script has been stopped successfully.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_main")]]))
         else:
-            await query.edit_message_text("⚠️ No active python script is currently running.")
+            await query.edit_message_text("⚠️ No active python script is currently running.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_main")]]))
     elif data == "menu_help":
         help_text = (
             "🛠 **Admin Commands & Instructions:**\n\n"
-            "• **Upload .py file:** Sends and prepares a script for hosting.\n"
+            "• **Upload .py file:** Saves and prepares a script for hosting.\n"
+            "• **Storage:** View, run, or delete all saved scripts on the bot.\n"
             "• **Pip Command:** Type `pip install <package>` directly in chat to install dependencies.\n"
-            "• **Stop Script:** Terminates any currently running background script.\n"
         )
         keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_main")]]
         await query.edit_message_text(help_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
     elif data == "back_main":
-        keyboard = [
-            [InlineKeyboardButton("📂 Upload & Host Script", callback_data="menu_upload")],
-            [InlineKeyboardButton("📦 Auto-Install Requirements", callback_data="menu_auto_req")],
-            [InlineKeyboardButton("🛑 Stop Running Script", callback_data="menu_stop")],
-            [InlineKeyboardButton("ℹ️ Status & Help", callback_data="menu_help")]
-        ]
-        await query.edit_message_text("🤖 **Python Hosting Bot Control Panel**\n\nChoose an option:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text("🤖 **Python Hosting Bot Control Panel**\n\nChoose an option:", reply_markup=InlineKeyboardMarkup(get_main_menu()))
 
 # --- File Receiver & Execution Handler ---
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -98,25 +133,19 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     doc = update.message.document
     file_name = doc.file_name
-    file_unique_id = doc.file_unique_id
 
-    # Download file locally
     file = await context.bot.get_file(doc.file_id)
     local_path = os.path.join(os.getcwd(), file_name)
     await file.download_to_drive(local_path)
 
     if file_name.endswith(".py"):
-        # Automatically scan file content for imports to handle auto-requirement installation suggestion
-        with open(local_path, "r", encoding="utf-8", errors="ignore") as f:
-            content = f.read()
-        
         keyboard = [
             [InlineKeyboardButton("🚀 Run Script", callback_data=f"run_{file_name}")],
             [InlineKeyboardButton("📦 Auto-Install Imports", callback_data=f"req_{file_name}")],
-            [InlineKeyboardButton("❌ Cancel", callback_data="back_main")]
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_main")]
         ]
         await update.message.reply_text(
-            f"✅ File `{file_name}` uploaded successfully!\nWhat would you like to do?",
+            f"✅ File `{file_name}` uploaded & saved to storage successfully!\nWhat would you like to do?",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown"
         )
@@ -138,12 +167,12 @@ async def file_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     data = query.data
-    global active_process
+    global active_process, active_filename
 
     if data.startswith("run_"):
         filename = data.replace("run_", "")
         if active_process and active_process.poll() is None:
-            await query.message.reply_text("⚠️ Another script is already running! Stop it first using the menu.")
+            await query.message.reply_text("⚠️ Another script is already running! Stop it first.")
             return
 
         def run_script():
@@ -151,7 +180,20 @@ async def file_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             active_process = subprocess.Popen([sys.executable, filename], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
         threading.Thread(target=run_script, daemon=True).start()
-        await query.edit_message_text(f"🚀 Started hosting and executing `{filename}` in the background background process!")
+        active_filename = filename
+        await query.edit_message_text(f"🚀 Started hosting and executing `{filename}` in the background!")
+
+    elif data.startswith("del_"):
+        filename = data.replace("del_", "")
+        try:
+            path = os.path.join(os.getcwd(), filename)
+            if os.path.exists(path):
+                os.remove(path)
+                await query.edit_message_text(f"🗑 File `{filename}` deleted successfully from storage!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Storage", callback_data="menu_storage")]]))
+            else:
+                await query.edit_message_text("⚠️ File not found.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Storage", callback_data="menu_storage")]]))
+        except Exception as e:
+            await query.edit_message_text(f"❌ Error deleting file: {str(e)}")
 
     elif data.startswith("req_"):
         filename = data.replace("req_", "")
@@ -159,10 +201,14 @@ async def file_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             with open(filename, "r", encoding="utf-8", errors="ignore") as f:
                 code = f.read()
             
-            # Simple regex search to find external third-party imports (e.g., 'import requests', 'from bs4 import ...')
             imports = set(re.findall(r'^(?:import|from)\s+([a-zA-Z0-9_]+)', code, re.MULTILINE))
-            # Filter standard library modules roughly or pass them to pip (pip handles system modules gracefully or skips if built-in)
-            standard_libs = {"os", "sys", "re", "math", "json", "time", "datetime", "subprocess", "threading", "random", "collections", "pathlib"}
+            
+            standard_libs = {
+                "os", "sys", "re", "math", "json", "time", "datetime", 
+                "subprocess", "threading", "random", "collections", "pathlib",
+                "marshal", "zlib", "base64", "urllib", "hashlib", "io", "ast",
+                "logging", "itertools", "functools", "shutil", "glob", "typing"
+            }
             to_install = [imp for imp in imports if imp not in standard_libs]
 
             if not to_install:
@@ -179,7 +225,7 @@ async def file_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             await query.message.reply_text(f"❌ Error processing requirements: {str(e)}")
 
-# --- Direct Admin Pip Commands (e.g., pip install <package>) ---
+# --- Direct Admin Pip Commands ---
 async def handle_text_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if not is_admin(chat_id):
@@ -202,7 +248,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler, pattern="^(menu_|back_)"))
-    app.add_handler(CallbackQueryHandler(file_action_handler, pattern="^(run_|req_)"))
+    app.add_handler(CallbackQueryHandler(file_action_handler, pattern="^(run_|req_|del_)"))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_commands))
 
@@ -211,3 +257,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+        
